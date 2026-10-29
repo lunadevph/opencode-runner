@@ -1,0 +1,102 @@
+
+name: OpenCode Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Git repository URL to clone"
+        required: true
+        type: string
+        default: "https://github.com/xxxxxxxx"
+
+      model:
+        description: "OpenCode model ID"
+        required: true
+        type: string
+        default: "opencode/big-pickle"
+
+      message:
+        description: "Prompt to send to OpenCode"
+        required: true
+        type: string
+        default: "Analyze this repository and improve its code."
+
+      custom_instructions:
+        description: "Additional instructions for the AI"
+        required: false
+        type: string
+        default: "Keep changes minimal and explain what you changed."
+
+      push_changes:
+        description: "Commit and push OpenCode changes"
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  run-opencode:
+    name: Clone and run OpenCode
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Clone repository
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$REPOSITORY" target-repo
+
+      - name: Install OpenCode
+        run: |
+          npm install --global opencode-ai
+          opencode --version
+
+      - name: Run OpenCode
+        working-directory: target-repo
+        env:
+          MODEL: ${{ inputs.model }}
+          MESSAGE: ${{ inputs.message }}
+          CUSTOM_INSTRUCTIONS: ${{ inputs.custom_instructions }}
+        run: |
+          set -euo pipefail
+
+          PROMPT="$(printf '%s\n\nCustom instructions:\n%s' \
+            "$MESSAGE" "$CUSTOM_INSTRUCTIONS")"
+
+          opencode run --model "$MODEL" "$PROMPT"
+
+      - name: Commit and push changes
+        if: ${{ inputs.push_changes }}
+        working-directory: target-repo
+        env:
+          TARGET_REPO_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TARGET_REPO_TOKEN:-}" ]; then
+            echo "::error::Configure the TARGET_REPO_TOKEN secret."
+            exit 1
+          fi
+
+          BRANCH="$(git branch --show-current)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Apply OpenCode changes"
+
+          AUTH="$(printf 'x-access-token:%s' \
+            "$TARGET_REPO_TOKEN" | base64 -w0)"
+
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" \
+            push origin "HEAD:refs/heads/$BRANCH"
